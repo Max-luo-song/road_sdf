@@ -1,0 +1,10 @@
+protobuf>=3.19.4
+cramjam>=2.0.0
+zstandard>=0.19.0
+
+
+# 系统依赖（需要单独安装）
+# FFmpeg (用于 HEVC/H.265 视频转换)
+# 安装方法：
+#   Ubuntu/Debian: sudo apt-get install ffmpeg
+

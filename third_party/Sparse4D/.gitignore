@@ -1,0 +1,12 @@
+*.pyc
+*.npy
+*.pth
+*.ipynb
+*.so
+*.egg-info/
+
+work_dir
+results*
+data
+build
+ckpt

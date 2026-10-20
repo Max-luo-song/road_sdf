@@ -1,0 +1,83 @@
+legend: # render legend to link instance and instance id
+  rigid: false
+  smpl: false
+save_ckpt: true  # 设为 true 则将编辑后的场景保存为 checkpoint_final.pth 到视频输出目录
+weather_type: ""
+Nodes:
+  RigidNodes:
+    trajectory_edit:
+      instance_id: [1]
+      offset_windows:
+        - [[0, 20, [0, 3, 0]], [20, 40, [0, -3, 0]]]  # instance 1 的窗口: [start_frame, end_frame, [dx,dy,dz]]
+    add:
+      ref_id: [-1]
+      add_obj: ["/nas_thoru/oldbak/lcy/asset/car_sample_van.ply"]
+      waypoints: 
+        - - [0, -3, -0.2]
+          - [2, -1, -0.2]
+          - [4, 2, -0.2]
+          - [6, 0, -0.2]
+          - [12, 0, -0.2]
+      method: ["cubic"]
+      time_window:
+        - [20, 80]
+      color_correct: true   # 开启色差修正，不写或 false 则跳过
+      brightness_radius: 5.0   # 3D 空间查询半径（米），不写默认 3.0
+    # remove:
+    #   instance_id: 
+    #   - 1
+    # replace:
+    #   target_id:
+    #   - 1
+    #   replace_obj: # path -> digital asset, instance id -> instance already in scene
+    #   - "/inspire/hdd/global_user/lichaoyang-240108120078/scene_reconstruction/data/assets/car_ambulance.ply"
+    #   - 2
+  # SMPLNodes:
+    # trajectory:
+    #   instance_id:
+    #   - 1
+    #   offset: #[x, y, z]
+    #   - [0, 0, 1.0]
+    # add:
+    #   ref_id: # copy trajectory/fv/orienstation from an existing SMPL instance id,
+    #   # or from an exported *_motion.pt produced by export_smpl_assets.sh
+    #   - 1
+    #   #- "/path/to/smpl_assets/smpl_instance_000_motion.pt"
+    #   add_obj:
+    #   - "/path/to/smpl_assets/smpl_instance_000.ply"
+    #   add_motion: # required .pt motion asset
+    #   - "/path/to/smpl_assets/smpl_instance_000_motion.pt"
+    #   appear_frames: # optional, the frame index where fv starts to become true; tail is truncated by scene length
+    #   - 30
+    #   offset:
+    #   - [0.0, 0.0, 1.0]
+    # remove:
+    #   instance_id: 
+    #   - 1
+    # replace:
+    #   target_id:
+    #   - 1
+    #   replace_obj: # path -> Gaussian .ply asset, or instance id already in scene
+    #   - "/path/to/smpl_assets/smpl_instance_000.ply"
+    #   #- 1
+    #   replace_motion: # .pt motion asset, or instance id already in scene; set null to keep original motion
+    #   - "/path/to/smpl_assets/smpl_instance_000_motion.pt"
+    #   #- 2
+    #   #- null
+  Background:
+    add:
+      add_obj:
+        - "/nas_thoru/scenario_data/100clips_recon/sod_assets/water_barrier.ply"
+        - "/nas_thoru/scenario_data/100clips_recon/sod_assets/water_barrier.ply"
+      offset: # offset self trajectory to create a new trajectory for added instance 
+        - [5, -2.8, -1.2]
+        - [5, -1.8, -1.2]
+      time_window:
+        - [0, 50, 5]
+        - [0, 50, 5]
+      rotation:
+        - [0, 0, 90]
+        - [0, 0, 0]
+      color_correct: true   # 开启色差修正，不写或 false 则跳过
+      brightness_radius: 5.0   # 3D 空间查询半径（米），不写默认 3.0
+

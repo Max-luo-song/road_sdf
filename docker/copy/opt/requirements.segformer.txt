@@ -1,0 +1,11 @@
+timm==0.3.2
+pylint==3.2.7
+debugpy==1.8.17
+opencv-python-headless==4.12.0.88
+attrs==25.3.0
+ipython==8.12.3
+tqdm==4.67.1
+imageio==2.35.1
+scikit-image==0.21.0
+omegaconf==2.3.0
+mmcv-full==1.2.7

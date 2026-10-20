@@ -1,0 +1,7 @@
+# Matched auxiliary architecture and initial surface; geometry weights are frozen.
+_base_: road_height_learned.yaml
+model:
+  RoadNodes:
+    networks:
+      road_surface:
+        learn_height: false

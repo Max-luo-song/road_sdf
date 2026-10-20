@@ -1,0 +1,60 @@
+# Qcraft dataset configuration
+# Processed cameras:
+#   idx      camera            original size
+#    0    front_wide_110        (1024, 512)
+#    1    front_wide_60         (1024, 512)
+#    2    front_tele_30         (1024, 512)
+#    3    front_tele_15         (1024, 512)
+#    4    front_wide_left_60    (1024, 512)
+#    5    front_left_99         (1024, 512)
+#    6    rear_left_99          (1024, 512)
+#    7    rear_left_30          (512,  256)
+#    8    front_wide_right_60   (1024, 512)
+#    9    front_right_99        (1024, 512)
+#    10   rear_right_99         (1024, 512)
+#    11   rear_right_30         (512,  256)
+#    12   rear_50               (1024, 512)
+
+
+data:
+  data_root: data/qcraft/processed/training # data root for the dataset
+  dataset: qcraft 
+  scene_idx: 0 # which scene to use
+  start_timestep: 0 # which timestep to start from
+  end_timestep: -1 # which timestep to end at, -1 means the last timestep
+  preload_device: cuda # choose from ["cpu", "cuda"], cache the data on this device.
+  pixel_source: # image source and object annotations
+    type: datasets.qcraft.qcraft_sourceloader.QcraftPixelSource
+    cameras: [0] # which cameras to use
+    downscale_when_loading: [1] # the size of the images to load
+    downscale: 1 # downscale factor wrt to the downscale_when_loading
+    undistort: False # whether to undistort the images
+    test_image_stride: 0 # use every Nth timestep for the test set. if 0, use all images for training and none for testing
+    load_sky_mask: True # whether to load sky mask
+    load_dynamic_mask: True # whether to load dynamic mask
+    load_objects: True # whether to load object bounding boxes
+    load_smpl: True # whether to load SMPL template for pedestrians
+    load_road_mask: True
+    sampler: # error based image sampler
+      buffer_downscale: 8 # downscale factor for the buffer wrt load_size
+      buffer_ratio: 0.5 # the percentage of images sampled according to the error buffer
+      start_enhance_weight: 3 # give more chance to sample starting frames, which usually have more errors
+  lidar_source: # everything related to "lidar" --- from lidar points
+    type: datasets.qcraft.qcraft_sourceloader.QcraftLiDARSource
+    load_lidar: True # whether to load lidar
+    lidar_type: lidar
+    only_use_top_lidar: True # whether to only use the top lidar
+    truncated_max_range: 80 # max range for truncated lidar in a ego-centric coordinate system
+    truncated_min_range: -2 # min range for truncated lidar in a ego-centric coordinate system.
+    # ---- compute aabb from lidar ---- #
+    # if load_lidar is True, we compute aabb from lidar, otherwise we compute aabb from cameras
+    # 1) downsample lidar by random sampling to 1/lidar_downsample_factor number of points
+    # 2) compute aabb from the downsampled lidar points by using the percentile of lidar_percentiles 
+    lidar_downsample_factor: 4 # downsample lidar by this factor to compute percentile
+    lidar_percentile: 0.02  # percentile to compute aabb from lidar
+    # 深度图计算的三种模式
+    # (1) sf_raw：原始的深度计算方法，使用单帧的所有深度点
+    # (2) sf_static：仅静态背景的单帧深度点
+    # (3) mf_static：聚合所有帧静态背景的深度点
+    # 其中 sf: single-frame; mf: multi-frame
+    depth_mode: sf_static

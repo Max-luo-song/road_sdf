@@ -1,0 +1,43 @@
+# All paths are relative to this file. Resolved config is saved by tools/train.py.
+_base_: omnire_extended_cam_lidar.yaml
+
+model:
+  RoadNodes:
+    networks:
+      road_surface:
+        enabled: true
+        learn_height: true
+        levels: 8
+        features: 2
+        table_size: 16384
+        min_resolution: 16
+        max_resolution: 512
+        hidden_dim: 64
+        base_cell_size: 0.1
+        max_grid_cells: 4000000
+        max_height_delta: 0.5  # metres, bounded residual relative to initial grid
+        apply_after: 1000     # field pretraining before road Z follows it
+        freeze_after: 30000   # last 10000 steps train GS appearance only
+        step_interval: 1
+        rays_per_image: 512
+        samples_per_ray: 48
+        ray_height_band: 1.0  # must be larger than max_height_delta
+        inverse_sdf_scale: 40.0
+        near: 0.1
+        far: 120.0
+        min_downward_cos: 0.02
+        rgb_w: 1.0
+        coverage_w: 0.05
+        lidar_w: 0.1
+        lidar_huber_beta: 0.05
+        lidar_batch_size: 2048
+        max_lidar_points: 50000
+        holdout_fraction: 0.1
+        eikonal_w: 0.01
+        eikonal_points: 1024
+        finite_difference_eps: 0.05
+        query_chunk_size: 65536
+    optim:
+      surface_field:
+        lr: 0.001
+

@@ -1,0 +1,14 @@
+https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-py39_25.7.0-2-Linux-x86_64.sh
+  dir=/opt/downloads
+
+https://download.pytorch.org/models/alexnet-owt-7be5be79.pth
+  dir=/opt/downloads
+
+https://mirrors.sustech.edu.cn/anaconda/cloud/pytorch3d/linux-64/pytorch3d-0.7.8-py39_cu121_pyt231.tar.bz2
+  dir=/opt/local-conda-ch/main/linux-64
+
+http://nexus.izdrive.ai:8081/repository/zark/scene/segformer.b5.1024x1024.city.160k.pth
+  dir=/opt/SegFormer/pretrained
+
+https://download.openmmlab.com/mmsegmentation/v0.5/segformer/segformer_mit-b5_8x1_1024x1024_160k_cityscapes/segformer_mit-b5_8x1_1024x1024_160k_cityscapes_20211206_072934-87a052ec.pth
+  dir=/opt/mmsegmentation/checkpoints
