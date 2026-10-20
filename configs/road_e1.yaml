@@ -1,0 +1,31 @@
+# e1: learned SDF geometry and normals, with trainable road Gaussian appearance.
+_base_: road_height_learned.yaml
+trainer:
+  losses:
+    road_color:
+      w: 0.5
+      lane_multiplier: 2.0
+      edge_multiplier: 0.2
+      start_after: 0
+      warmup_steps: 1000
+      erosion_px: 3
+    road_coverage:
+      w: 0.1
+      target_alpha: 0.95
+      lane_target_alpha: 0.98
+      lane_multiplier: 1.0
+      start_after: 0
+      warmup_steps: 1000
+      erosion_px: 3
+    road_contribution:
+      w: 0.05
+      target_share: 0.9
+      start_after: 500
+      warmup_steps: 1000
+      erosion_px: 3
+model:
+  RoadNodes:
+    networks:
+      road_surface:
+        free_scales: true
+        free_opacity: true

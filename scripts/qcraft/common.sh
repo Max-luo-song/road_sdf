@@ -29,9 +29,9 @@ segformer_path=/inspire/hdd/global_user/guoluosong-253108120129/chery_workspace/
 camera_ids=(0 1 2 3 5 6 7 9 10 11 12)
 lidar_type="lidar" # lidar（运动补偿前）/visual（纯视觉）
 output_root="${OUTPUT_ROOT:-/inspire/hdd/global_user/guoluosong-253108120129/chery_workspace/zhengzhehao/output}"
-config_file="configs/road_height_learned.yaml"
+config_file="${QCRAFT_CONFIG_FILE:-configs/road_e1.yaml}"
 dataset_config="qcraft/11cams_${lidar_type}"
-extra_config_info="e0-sdf-normal-fast" # e0: 学习高度和法线，缓存几何同步
+extra_config_info="e1-sdf-road-gs"
 
 # 相机分组训练配置
 group_execution_mode="serial"  # serial / parallel

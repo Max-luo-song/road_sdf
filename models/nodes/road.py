@@ -191,7 +191,9 @@ class RoadNodes(nn.Module):
             )
         self._quats = Parameter(unit_quats, requires_grad=not self.surface_orientation_enabled)
 
-        if self._lane_mask is not None and self._lane_mask.any():
+        if (self._lane_mask is not None and self._lane_mask.any()
+                and not (self.surface_field is not None
+                         and self.surface_field.cfg.get("free_scales", False))):
             lane_mask = self._lane_mask
 
             def freeze_lane_perpendicular_scale(grad):
@@ -239,6 +241,8 @@ class RoadNodes(nn.Module):
         return self._means.shape[0]
     @property
     def get_scaling(self):
+        if self.surface_field is not None and self.surface_field.cfg.get("free_scales", False):
+            return torch.exp(self._scales)
         if self.ball_gaussians:
             if self.gaussian_2d:
                 scaling = torch.exp(self._scales).repeat(1, 2)
@@ -260,6 +264,8 @@ class RoadNodes(nn.Module):
                 # return torch.exp(self._scales)
     @property
     def get_opacity(self):
+        if self.surface_field is not None and self.surface_field.cfg.get("free_opacity", False):
+            return torch.sigmoid(self._opacities)
         lowest_opacity = self.reg_cfg.get("lowest_opacity", None)
         # print("lowest_opacity:", lowest_opacity)
         return torch.sigmoid(self._opacities).clamp(min=lowest_opacity)
@@ -476,8 +482,9 @@ class RoadNodes(nn.Module):
                     (split_means, split_feature_dc, split_feature_rest, split_opacities, split_scales, split_quats) = self.split_gaussians(splits, nsamps)
 
                     # 投影 Split 生成的点：强制 Z 轴位置和 Scale
-                    split_means[:, 2] = avg_road_z
-                    split_scales[:, 2] = ROAD_LOG_EPSILON
+                    if not self.surface_field or not self.surface_field.cfg.get("free_scales", False):
+                        split_means[:, 2] = avg_road_z
+                        split_scales[:, 2] = ROAD_LOG_EPSILON
 
                     # --- Duplicate 逻辑 ---
                     dups = (self.get_scaling.max(dim=-1).values <= self.ctrl_cfg.densify_size_thresh * self.scene_scale).squeeze()
@@ -485,16 +492,19 @@ class RoadNodes(nn.Module):
                     (dup_means, dup_feature_dc, dup_feature_rest, dup_opacities, dup_scales, dup_quats) = self.dup_gaussians(dups)
                     
                     # 投影 Duplicate 生成的点：强制 Z 轴位置和 Scale
-                    dup_means[:, 2] = avg_road_z
-                    dup_scales[:, 2] = ROAD_LOG_EPSILON
+                    if not self.surface_field or not self.surface_field.cfg.get("free_scales", False):
+                        dup_means[:, 2] = avg_road_z
+                        dup_scales[:, 2] = ROAD_LOG_EPSILON
 
                     # 合并参数
-                    self._means = Parameter(torch.cat([self._means.detach(), split_means, dup_means], dim=0))
+                    self._means = Parameter(torch.cat([self._means.detach(), split_means, dup_means], dim=0),
+                                            requires_grad=self.surface_field is None)
                     self._features_dc = Parameter(torch.cat([self._features_dc.detach(), split_feature_dc, dup_feature_dc], dim=0))
                     self._features_rest = Parameter(torch.cat([self._features_rest.detach(), split_feature_rest, dup_feature_rest], dim=0))
                     self._opacities = Parameter(torch.cat([self._opacities.detach(), split_opacities, dup_opacities], dim=0))
                     self._scales = Parameter(torch.cat([self._scales.detach(), split_scales, dup_scales], dim=0))
-                    self._quats = Parameter(torch.cat([self._quats.detach(), split_quats, dup_quats], dim=0))
+                    self._quats = Parameter(torch.cat([self._quats.detach(), split_quats, dup_quats], dim=0),
+                                            requires_grad=not self.surface_orientation_enabled)
                     
                     self.max_2Dsize = torch.cat([self.max_2Dsize, torch.zeros_like(split_scales[:, 0]), torch.zeros_like(dup_scales[:, 0])], dim=0)
                     

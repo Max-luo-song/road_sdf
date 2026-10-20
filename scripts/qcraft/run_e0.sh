@@ -6,6 +6,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${repo_root}"
 scene="${1:-20260613_102138_QCJPTDJ07384_3298_3308}"
 export GROUP0_GPU="${E0_GPU:-0}"
+export QCRAFT_CONFIG_FILE="configs/road_height_learned.yaml"
 export RUN_NAME_OVERRIDE="${RUN_NAME_OVERRIDE:-$(TZ=Asia/Shanghai date +%Y%m%d_%H%M%S)_e0_sdf-normal-fast}"
 if [[ ! "${scene}" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ || ! "${RUN_NAME_OVERRIDE}" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]]; then
     echo "[ERROR] Invalid scene or run name." >&2

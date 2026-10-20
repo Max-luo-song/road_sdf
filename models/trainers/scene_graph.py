@@ -109,6 +109,10 @@ class MultiTrainer(BasicTrainer):
 
     def compute_losses(self, outputs, image_infos, cam_infos, gs):
         losses = super().compute_losses(outputs, image_infos, cam_infos, gs)
+        from utils.road_supervision import compute_road_supervision_losses
+        if self.training and "road_masks" in image_infos and getattr(self, "losses_dict", None) is not None:
+            losses.update(compute_road_supervision_losses(
+                outputs, image_infos, self.losses_dict, self.step))
         road = self.models.get("RoadNodes")
         field = getattr(road, "surface_field", None)
         camera = getattr(self, "_road_field_camera", None)
@@ -123,6 +127,8 @@ class MultiTrainer(BasicTrainer):
 
     def compute_metrics(self, outputs, image_infos):
         metrics = super().compute_metrics(outputs, image_infos)
+        from utils.road_supervision import road_supervision_metrics
+        metrics.update(road_supervision_metrics(outputs, image_infos))
         road = self.models.get("RoadNodes")
         field = getattr(road, "surface_field", None)
         if field is not None and field.initialized:
@@ -483,9 +489,12 @@ class MultiTrainer(BasicTrainer):
                     return new_grad
 
                 # 在初始化或 collect_gaussians 后注册
-                gs.scales.register_hook(scale_grad_hook)
-                attr_name_scales = f'road_freeze_hook_registered_scales'
-                setattr(gs, attr_name_scales, True)
+                road_model = self.models.get("RoadNodes")
+                field = getattr(road_model, "surface_field", None)
+                if field is None or not field.cfg.get("free_scales", False):
+                    gs.scales.register_hook(scale_grad_hook)
+                    attr_name_scales = f'road_freeze_hook_registered_scales'
+                    setattr(gs, attr_name_scales, True)
 
         # render gaussians
         outputs, render_fn = self.render_gaussians(
@@ -513,6 +522,25 @@ class MultiTrainer(BasicTrainer):
             road_mask = image_infos["road_masks"]
             outputs['road_rgb'] = outputs['rgb'] * road_mask[..., None]
         outputs["freeze_mask"] = freeze_mask # 带回路面标注
+
+        from utils.road_supervision import supervision_weight, unpremultiply_road_rgb
+        color_active = supervision_weight(self.losses_dict.get("road_color"), self.step) > 0
+        coverage_active = supervision_weight(self.losses_dict.get("road_coverage"), self.step) > 0
+        contribution_active = supervision_weight(self.losses_dict.get("road_contribution"), self.step) > 0
+        if (self.training and "road_masks" in image_infos and "RoadNodes" in self.gaussian_classes
+                and (color_active or coverage_active or contribution_active)):
+            road_mask = self.pts_labels == self.gaussian_classes["RoadNodes"]
+            road_rgb, _, road_alpha = render_fn(road_mask)
+            outputs["RoadNodes_opacity"] = road_alpha
+            if color_active:
+                road_color = unpremultiply_road_rgb(road_rgb, road_alpha)
+                outputs["RoadNodes_color"] = self.affine_transformation(
+                    road_color, image_infos, detach_affine=True)
+            if contribution_active:
+                tags = torch.zeros_like(gs.rgbs)
+                tags[:, 0] = road_mask.to(tags.dtype)
+                contribution, _, _ = render_fn(colors_override=tags)
+                outputs["RoadNodes_contribution"] = contribution[..., :1]
 
         if not self.training and self.render_each_class:
             with torch.no_grad():

@@ -733,7 +733,7 @@ class BasicTrainer(nn.Module):
         cam: dataclass_camera,
         **kwargs,
     ) -> Dict[str, torch.Tensor]:
-        def render_fn(opaticy_mask=None, return_info=False):
+        def render_fn(opaticy_mask=None, return_info=False, colors_override=None):
             renders, alphas, info = rasterization(
                 means=gs.means,
                 quats=gs.quats,
@@ -743,7 +743,7 @@ class BasicTrainer(nn.Module):
                     if opaticy_mask is not None
                     else gs.opacities.squeeze()
                 ),
-                colors=gs.rgbs,
+                colors=gs.rgbs if colors_override is None else colors_override,
                 viewmats=torch.linalg.inv(cam.camtoworlds)[None, ...],  # [C, 4, 4]
                 Ks=cam.Ks[None, ...],  # [C, 3, 3]
                 width=cam.W,
@@ -789,10 +789,13 @@ class BasicTrainer(nn.Module):
         return results, render_fn
 
     def affine_transformation(
-        self, rgb_blended: torch.Tensor, image_infos: Dict[str, torch.Tensor]
+        self, rgb_blended: torch.Tensor, image_infos: Dict[str, torch.Tensor],
+        detach_affine: bool = False,
     ):
         if "Affine" in self.models:
             affine_trs = self.models["Affine"](image_infos)
+            if detach_affine:
+                affine_trs = affine_trs.detach()
             rgb_transformed = (
                 affine_trs[..., :3, :3] @ rgb_blended[..., None]
                 + affine_trs[..., :3, 3:]
