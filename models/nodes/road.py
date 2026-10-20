@@ -551,9 +551,11 @@ class RoadNodes(nn.Module):
                 # cull big screen space
                 assert self.max_2Dsize is not None
                 culls = culls | (self.max_2Dsize > self.ctrl_cfg.cull_screen_size).squeeze()
-        self._means = Parameter(self._means[~culls].detach())
+        self._means = Parameter(self._means[~culls].detach(),
+                                requires_grad=self.surface_field is None)
         self._scales = Parameter(self._scales[~culls].detach())
-        self._quats = Parameter(self._quats[~culls].detach())
+        self._quats = Parameter(self._quats[~culls].detach(),
+                                requires_grad=not self.surface_orientation_enabled)
         # self.colors_all = Parameter(self.colors_all[~culls].detach())
         self._features_dc = Parameter(self._features_dc[~culls].detach())
         self._features_rest = Parameter(self._features_rest[~culls].detach())

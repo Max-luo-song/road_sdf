@@ -107,6 +107,24 @@ class RoadTrainerIntegrationTests(unittest.TestCase):
         self.assertEqual(set(trainer.compute_losses(outputs, image, {}, None)), {"rgb_loss"})
         self.assertEqual(set(trainer.compute_metrics(outputs, image)), {"psnr"})
 
+    def test_e1_scale_opacity_and_cull_keep_sdf_geometry_frozen(self):
+        _, road, _, _ = self.fixture()
+        road.surface_field.cfg.update(align_normals=True, free_scales=True, free_opacity=True)
+        road._scales = nn.Parameter(torch.log(torch.tensor([[0.12, 0.15, 0.04],
+                                                            [0.12, 0.15, 0.04]])))
+        road._opacities = nn.Parameter(torch.logit(torch.full((2, 1), 0.1)))
+        road._features_dc = nn.Parameter(torch.zeros(2, 3))
+        road._features_rest = nn.Parameter(torch.zeros(2, 3, 3))
+        road.reg_cfg = {"lowest_opacity": 0.2}
+        road.ctrl_cfg = SimpleNamespace(cull_alpha_thresh=0.005, reset_alpha_interval=4000)
+        torch.testing.assert_close(road.get_scaling, road._scales.exp())
+        torch.testing.assert_close(road.get_opacity, torch.full((2, 1), 0.1))
+        road.cull_gaussians()
+        self.assertFalse(road._means.requires_grad)
+        self.assertFalse(road._quats.requires_grad)
+        self.assertTrue(road._scales.requires_grad)
+        self.assertTrue(road._opacities.requires_grad)
+
     def test_actual_sync_bakes_height_and_orientation_and_retains_unsupported(self):
         _, road, _, _ = self.fixture()
         field = road.surface_field
