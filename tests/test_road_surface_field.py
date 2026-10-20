@@ -74,6 +74,50 @@ class RoadSurfaceTests(unittest.TestCase):
         torch.testing.assert_close(normals[:2], F.normalize(gradient, dim=-1))
         self.assertTrue(all(p.grad is None for p in field.parameters()))
 
+    def test_hash_feature_jacobian_matches_autograd(self):
+        field = make_field()
+        xy = torch.tensor([[0.13, 0.22], [-0.15, 1.14]], requires_grad=True)
+        with torch.no_grad():
+            field.encoding.tables.uniform_(-0.3, 0.3)
+        features, jacobian = field.encoding.value_and_jacobian(xy)
+        reference = field.encoding(xy)
+        torch.testing.assert_close(features, reference)
+        for channel in range(reference.shape[-1]):
+            derivative, = torch.autograd.grad(reference[:, channel].sum(), xy, retain_graph=True)
+            torch.testing.assert_close(jacobian[:, channel], derivative)
+
+    def test_base_gradient_with_holes_edges_and_no_support(self):
+        field = make_field()
+        with torch.no_grad():
+            field.base_heights.normal_(std=0.1)
+            field.base_valid[7:10, 8:11] = False
+        xy = torch.cat((torch.rand(64, 2) * 4.6 - 2.3, torch.tensor([[100., 100.]])))
+        xy.requires_grad_(True)
+        reference, supported = field.base_height(xy)
+        expected, = torch.autograd.grad(reference.sum(), xy)
+        value, valid, gradient = field.base_height(xy.detach(), with_gradient=True)
+        torch.testing.assert_close(value, reference)
+        self.assertTrue(torch.equal(valid, supported))
+        torch.testing.assert_close(gradient, expected, atol=2e-6, rtol=2e-5)
+
+    def test_analytic_normals_match_autograd_after_nontrivial_geometry_updates(self):
+        field = make_field()
+        with torch.no_grad():
+            field.encoding.tables.uniform_(-0.2, 0.2)
+            field.geometry[-1].weight.normal_(std=0.3)
+            field.base_heights.normal_(std=0.02)
+        for saturation in (False, True):
+            if saturation:
+                with torch.no_grad():
+                    field.geometry[0].bias.fill_(25.)
+            xy = (torch.rand(32, 2) * 2 - 1).requires_grad_(True)
+            expected_height, _ = field.height(xy)
+            gradient, = torch.autograd.grad(expected_height.sum(), xy)
+            expected_normal = F.normalize(torch.cat((-gradient, torch.ones(32, 1)), -1), dim=-1)
+            height, normal, _ = field.height_and_normal(xy)
+            torch.testing.assert_close(height, expected_height)
+            torch.testing.assert_close(normal, expected_normal, atol=2e-6, rtol=2e-5)
+
     def test_orientation_alignment_preserves_yaw_without_accumulating_tilt(self):
         yaw = torch.tensor([0., 0.7, -2.5, 3.14159265])
         original = torch.zeros(4, 4)

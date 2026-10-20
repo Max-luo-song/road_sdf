@@ -63,6 +63,26 @@ class HashGrid2D(nn.Module):
             outputs.append((self.tables[level][indices] * weights[..., None]).sum(-2))
         return torch.cat(outputs, -1)
 
+    @torch.no_grad()
+    def value_and_jacobian(self, xy):
+        """Same bilinear features and exact piecewise XY derivatives, no graph."""
+        outputs, jacobians = [], []
+        offsets = xy.new_tensor([[0, 0], [1, 0], [0, 1], [1, 1]], dtype=torch.long)
+        signs = 2 * offsets - 1
+        for level, resolution in enumerate(self.resolutions):
+            p = xy * resolution
+            base = p.floor().long()
+            frac = p - base
+            corners = base[..., None, :] + offsets
+            indices = (corners[..., 0] ^ (corners[..., 1] * 2654435761)) % self.tables.shape[1]
+            factors = torch.where(offsets.bool(), frac[..., None, :], 1 - frac[..., None, :])
+            values = self.tables[level][indices]
+            outputs.append((values * factors.prod(-1)[..., None]).sum(-2))
+            dx = (values * (signs[:, 0] * factors[..., 1])[..., None]).sum(-2) * resolution
+            dy = (values * (signs[:, 1] * factors[..., 0])[..., None]).sum(-2) * resolution
+            jacobians.append(torch.stack((dx, dy), -1))
+        return torch.cat(outputs, -1), torch.cat(jacobians, -2)
+
 
 class RoadSurfaceField(nn.Module):
     def __init__(self, cfg):
@@ -138,7 +158,7 @@ class RoadSurfaceField(nn.Module):
     def normalized_xy(self, xy):
         return (xy - self.origin) / self.extent
 
-    def base_height(self, xy):
+    def base_height(self, xy, with_gradient=False):
         """Masked bilinear interpolation; never connect across unsupported grid holes."""
         if not self.initialized:
             raise RuntimeError("RoadSurfaceField must be initialized before querying")
@@ -147,18 +167,32 @@ class RoadSurfaceField(nn.Module):
         frac = p - lower
         numerator = torch.zeros_like(xy[..., 0])
         denominator = torch.zeros_like(numerator)
+        if with_gradient:
+            numerator_grad = torch.zeros_like(xy)
+            denominator_grad = torch.zeros_like(xy)
         height, width = self.base_heights.shape
         for dx, dy in ((0, 0), (1, 0), (0, 1), (1, 1)):
             ix, iy = lower[..., 0] + dx, lower[..., 1] + dy
             inside = (ix >= 0) & (ix < width) & (iy >= 0) & (iy < height)
             ix, iy = ix.clamp(0, width - 1), iy.clamp(0, height - 1)
-            weight = (frac[..., 0] if dx else 1 - frac[..., 0])
-            weight = weight * (frac[..., 1] if dy else 1 - frac[..., 1])
-            weight = weight * (inside & self.base_valid[iy, ix])
+            wx = frac[..., 0] if dx else 1 - frac[..., 0]
+            wy = frac[..., 1] if dy else 1 - frac[..., 1]
+            valid = inside & self.base_valid[iy, ix]
+            weight = wx * wy * valid
             numerator = numerator + weight * self.base_heights[iy, ix]
             denominator = denominator + weight
+            if with_gradient:
+                grad = torch.stack(((1 if dx else -1) * wy,
+                                    (1 if dy else -1) * wx), -1)
+                grad = grad * valid[..., None] / self.cell_size
+                numerator_grad += grad * self.base_heights[iy, ix][..., None]
+                denominator_grad += grad
         supported = denominator > 1e-6
         base = torch.where(supported, numerator / denominator.clamp_min(1e-6), self.fallback_height)
+        if with_gradient:
+            denom = denominator.clamp_min(1e-6)
+            gradient = (numerator_grad - (numerator / denom)[..., None] * denominator_grad) / denom[..., None]
+            return base, supported, torch.where(supported[..., None], gradient, 0.)
         return base, supported
 
     def height(self, xy):
@@ -168,21 +202,43 @@ class RoadSurfaceField(nn.Module):
         return base + delta * supported, supported
 
     @torch.no_grad()
-    def height_and_normal(self, xy):
+    def height_and_normal(self, xy, base_geometry=None):
         """Bake geometry without connecting GS image losses to the field.
 
         At d=a(x,y)*(z-H(x,y))=0, grad(d)=a*(-Hx,-Hy,1).
         The positive slope factor cancels after normalization. Differentiate H
         including the base grid, rather than interpreting the scalar slope as
-        a complete normal. autograd.grad only queries XY; parameter .grad stays
-        untouched, including for the frozen-height control.
+        a complete normal. Exact analytic derivatives of bilinear interpolation,
+        hash features and the geometry MLP avoid a million-point autograd graph.
+        The static base interpolation can be supplied by RoadNodes' XY cache.
         """
-        with torch.enable_grad():
-            query = xy.detach().requires_grad_(True)
-            height, supported = self.height(query)
-            gradient, = torch.autograd.grad(height.sum(), query, create_graph=False)
+        base, supported, base_gradient = (self.base_height(xy, with_gradient=True)
+                                          if base_geometry is None else base_geometry)
+        features, jacobian = self.encoding.value_and_jacobian(self.normalized_xy(xy))
+        linear, activation, output = self.geometry
+        hidden = linear(features)
+        prediction = output(activation(hidden))
+        residual = torch.tanh(prediction[..., 0])
+        height = base + self.max_delta * residual * supported
+        derivative = torch.where(hidden * activation.beta > activation.threshold,
+                                 1., torch.sigmoid(hidden * activation.beta))
+        feature_gradient = (derivative * output.weight[0]) @ linear.weight
+        residual_gradient = (feature_gradient[..., None] * jacobian).sum(-2) / self.extent
+        gradient = base_gradient + (self.max_delta * (1 - residual.square()) * supported)[..., None] * residual_gradient
         normals = F.normalize(torch.cat((-gradient, torch.ones_like(height[..., None])), -1), dim=-1)
         return height.detach(), normals.detach(), supported.detach()
+
+    def base_geometry_version(self):
+        """Cheap CPU-side mutation tokens; no CUDA synchronization or copies."""
+        return tuple((id(value), value._version) for value in
+                     (self.origin, self.cell_size, self.base_heights,
+                      self.base_valid, self.fallback_height))
+
+    def geometry_version(self):
+        values = [*self.encoding.parameters(), *self.geometry.parameters(),
+                  self.encoding.resolutions, self.extent]
+        return (self.base_geometry_version(), tuple((id(p), p._version) for p in values),
+                self.max_delta)
 
     def sdf(self, points):
         base, supported = self.base_height(points[..., :2])

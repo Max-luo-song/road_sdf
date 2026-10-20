@@ -278,24 +278,52 @@ class RoadNodes(nn.Module):
     def preprocess_per_train_step(self, step: int):
         self.step = step
 
+    def _surface_sync_key(self):
+        return (self.surface_field.geometry_version(), id(self._means),
+                self._means._version, id(self._quats), self._quats._version,
+                self._means.device, self._means.dtype, self.surface_orientation_enabled)
+
     @torch.no_grad()
     def sync_surface_height(self):
         field = self.surface_field
         if (field is None or not field.initialized
                 or self.step < field.cfg.get("apply_after", 1000)):
             return
+        # Optimizer writes advance tensor versions. Forward immediately following
+        # a completed bake, fixed geometry and frozen geometry reuse baked GS.
+        # This also detects checkpoint loads, splitting and external optimizers.
+        if getattr(self, "_surface_synced_key", None) == self._surface_sync_key():
+            return
+        base_key = (field.base_geometry_version(), id(self._means), self._means._version,
+                    self._means.device, self._means.dtype)
+        cache_valid = (getattr(self, "_surface_base_key", None) == base_key
+                       and hasattr(self, "_surface_base_cache"))
+        if self.surface_orientation_enabled and not cache_valid:
+            self._surface_base_cache = (self._means.new_empty(self.num_points),
+                                        torch.empty(self.num_points, dtype=torch.bool, device=self._means.device),
+                                        self._means.new_empty(self.num_points, 2))
         chunk_size = field.cfg.get("query_chunk_size", 65536)
         for start in range(0, self.num_points, chunk_size):
             means = self._means[start:start + chunk_size]
             if self.surface_orientation_enabled:
                 from models.road_surface import align_road_quaternions
-                height, normals, supported = field.height_and_normal(means[:, :2])
+                base = tuple(value[start:start + chunk_size] for value in self._surface_base_cache)
+                if not cache_valid:
+                    computed = field.base_height(means[:, :2], with_gradient=True)
+                    for target, value in zip(base, computed):
+                        target.copy_(value)
+                height, normals, supported = field.height_and_normal(means[:, :2], base_geometry=base)
                 quats = self._quats[start:start + chunk_size]
                 aligned = align_road_quaternions(quats, normals)
                 quats.copy_(torch.where(supported[..., None], aligned, quats))
             else:
                 height, supported = field.height(means[:, :2])
             means[:, 2].copy_(torch.where(supported, height, means[:, 2]))
+        # Our own Z/rotation writes also change versions; cache the final tokens.
+        self._surface_synced_key = self._surface_sync_key()
+        self._surface_base_key = ((field.base_geometry_version(), id(self._means), self._means._version,
+                                  self._means.device, self._means.dtype)
+                                 if self.surface_orientation_enabled else None)
     
     # NOTE(gls): 关闭路面致密化
     def postprocess_per_train_step(

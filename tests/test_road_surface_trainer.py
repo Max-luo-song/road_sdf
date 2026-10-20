@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Dict, List, Optional, Tuple
 import unittest
+from unittest.mock import patch
 
 from omegaconf import OmegaConf
 import torch
@@ -150,6 +151,68 @@ class RoadTrainerIntegrationTests(unittest.TestCase):
         torch.testing.assert_close(road._quats, state["_quats"])
         self.assertFalse(road._quats.requires_grad)
         self.assertFalse(road._means.requires_grad)
+
+    def test_sync_reuses_bake_and_base_cache_until_geometry_changes(self):
+        _, road, _, _ = self.fixture()
+        field = road.surface_field
+        field.cfg["align_normals"] = True
+        with patch.object(field, "height_and_normal", wraps=field.height_and_normal) as query, \
+                patch.object(field, "base_height", wraps=field.base_height) as base:
+            road.sync_surface_height()
+            self.assertEqual((query.call_count, base.call_count), (1, 1))
+            road.step += 1
+            road.sync_surface_height()
+            with torch.no_grad():
+                field.color[-2].bias.add_(0.01)
+            road.sync_surface_height()
+            self.assertEqual((query.call_count, base.call_count), (1, 1))
+            with torch.no_grad():
+                field.geometry[-1].bias[0].add_(0.1)
+            road.sync_surface_height()
+            self.assertEqual((query.call_count, base.call_count), (2, 1))
+            torch.testing.assert_close(road._means[:, 2], field.height(road._means[:, :2])[0])
+            base.reset_mock()
+            with torch.no_grad():
+                road._means[0, 0].add_(0.1)
+            road.sync_surface_height()
+            self.assertEqual((query.call_count, base.call_count), (3, 1))
+            with torch.no_grad():
+                field.base_heights.add_(0.05)
+            road.sync_surface_height()
+            self.assertEqual((query.call_count, base.call_count), (4, 2))
+
+    def test_optimizer_bakes_once_then_forward_reuses_and_frozen_field_stops_baking(self):
+        trainer, road, image, outputs = self.fixture()
+        field = road.surface_field
+        field.cfg["align_normals"] = True
+        trainer.optimizer = torch.optim.Adam(list(field.parameters()) + [outputs["rgb"]], lr=0.001)
+        road.sync_surface_height()
+        with patch.object(field, "height_and_normal", wraps=field.height_and_normal) as query:
+            trainer.optimizer.zero_grad(set_to_none=True)
+            sum(trainer.compute_losses(outputs, image, {}, None).values()).backward()
+            trainer.optimizer_step()
+            self.assertEqual(query.call_count, 1)
+            road.sync_surface_height()  # next render must not bake the same geometry
+            self.assertEqual(query.call_count, 1)
+            trainer.step = road.step = field.cfg["freeze_after"]
+            trainer.optimizer.zero_grad(set_to_none=True)
+            sum(trainer.compute_losses(outputs, image, {}, None).values()).backward()
+            trainer.optimizer_step()
+            road.sync_surface_height()
+            self.assertEqual(query.call_count, 1)
+
+    def test_replacing_points_and_reloading_checkpoint_invalidates_runtime_cache(self):
+        _, road, _, _ = self.fixture()
+        field = road.surface_field
+        field.cfg["align_normals"] = True
+        road.sync_surface_height()
+        with patch.object(field, "height_and_normal", wraps=field.height_and_normal) as query:
+            road._means = nn.Parameter(road._means.detach().clone(), requires_grad=False)
+            road.sync_surface_height()
+            self.assertEqual(query.call_count, 1)
+            field.load_state_dict({k: v.clone() for k, v in field.state_dict().items()})
+            road.sync_surface_height()
+            self.assertEqual(query.call_count, 2)
 
     def test_frozen_field_stops_auxiliary_training(self):
         trainer, road, image, outputs = self.fixture()
