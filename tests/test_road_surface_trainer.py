@@ -61,6 +61,8 @@ class RoadTrainerIntegrationTests(unittest.TestCase):
         road.surface_field = make_field(apply_after=0) if enabled else None
         road._means = nn.Parameter(torch.tensor([[0., 0., 0.], [0.5, 0.5, 0.]]),
                                    requires_grad=False)
+        road._quats = nn.Parameter(torch.tensor([[1., 0., 0., 0.], [1., 0., 0., 0.]]),
+                                   requires_grad=False)
         road.step = trainer.step = 1
         trainer.models = {"RoadNodes": road}
         camera_pose = torch.eye(4)
@@ -103,6 +105,51 @@ class RoadTrainerIntegrationTests(unittest.TestCase):
         trainer, road, image, outputs = self.fixture(enabled=False)
         self.assertEqual(set(trainer.compute_losses(outputs, image, {}, None)), {"rgb_loss"})
         self.assertEqual(set(trainer.compute_metrics(outputs, image)), {"psnr"})
+
+    def test_actual_sync_bakes_height_and_orientation_and_retains_unsupported(self):
+        _, road, _, _ = self.fixture()
+        field = road.surface_field
+        field.cfg.update(align_normals=True, query_chunk_size=1)
+        # A known sloped surface; the second Gaussian is outside its support.
+        rows, cols = field.base_heights.shape
+        y, x = torch.meshgrid(torch.arange(rows), torch.arange(cols), indexing="ij")
+        field.base_heights.copy_(0.2 * (field.origin[0] + (x + 0.5) * field.cell_size))
+        road._means.data[1] = torch.tensor([100., 100., 7.])
+        road.sync_surface_height()
+        w, x, y, z = road._quats[0]
+        normal = torch.stack((2 * (x*z + w*y), 2 * (y*z - w*x), 1 - 2 * (x*x + y*y)))
+        expected = torch.nn.functional.normalize(torch.tensor([-0.2, 0., 1.]), dim=0)
+        torch.testing.assert_close(normal, expected)
+        torch.testing.assert_close(road._means[1], torch.tensor([100., 100., 7.]))
+        torch.testing.assert_close(road._quats[1], torch.tensor([1., 0., 0., 0.]))
+        self.assertIsNone(road._quats.grad)
+        self.assertTrue(all(p.grad is None for p in field.parameters()))
+        before = road._quats.detach().clone()
+        road.sync_surface_height()
+        torch.testing.assert_close(road._quats, before)
+
+    def test_legacy_orientation_and_warmup_remain_unchanged(self):
+        _, road, _, _ = self.fixture()
+        original = road._quats.detach().clone()
+        road.sync_surface_height()
+        torch.testing.assert_close(road._quats, original)
+        road.surface_field.cfg.update(align_normals=True, apply_after=100)
+        road.sync_surface_height()
+        torch.testing.assert_close(road._quats, original)
+
+    def test_checkpoint_restores_baked_rotation_as_geometry_not_rgb_parameter(self):
+        _, road, _, _ = self.fixture()
+        road.surface_field.cfg["align_normals"] = True
+        road.device = torch.device("cpu")
+        for name, shape in (("_scales", (2, 3)), ("_features_dc", (2, 3)),
+                            ("_features_rest", (2, 3, 3)), ("_opacities", (2, 1))):
+            setattr(road, name, nn.Parameter(torch.zeros(shape)))
+        road._quats.data[:] = torch.tensor([0.9, 0.1, 0.2, 0.3])
+        state = {key: value.clone() for key, value in road.state_dict().items()}
+        road.load_state_dict(state)
+        torch.testing.assert_close(road._quats, state["_quats"])
+        self.assertFalse(road._quats.requires_grad)
+        self.assertFalse(road._means.requires_grad)
 
     def test_frozen_field_stops_auxiliary_training(self):
         trainer, road, image, outputs = self.fixture()

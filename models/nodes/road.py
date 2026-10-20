@@ -71,6 +71,11 @@ class RoadNodes(nn.Module):
     def sh_degree(self):
         return self.ctrl_cfg.road_sh_degree
 
+    @property
+    def surface_orientation_enabled(self):
+        return (self.surface_field is not None
+                and self.surface_field.cfg.get("align_normals", False))
+
     def create_from_pcd(
         self,
         init_means: torch.Tensor,
@@ -184,7 +189,7 @@ class RoadNodes(nn.Module):
                 f"Lane-aware RoadNodes: {self._lane_mask.sum().item()}/{num_points} "
                 f"Gaussians within {self.ctrl_cfg.get('lane_influence_radius', 0.2):.2f} m"
             )
-        self._quats = Parameter(unit_quats)
+        self._quats = Parameter(unit_quats, requires_grad=not self.surface_orientation_enabled)
 
         if self._lane_mask is not None and self._lane_mask.any():
             lane_mask = self._lane_mask
@@ -282,7 +287,14 @@ class RoadNodes(nn.Module):
         chunk_size = field.cfg.get("query_chunk_size", 65536)
         for start in range(0, self.num_points, chunk_size):
             means = self._means[start:start + chunk_size]
-            height, supported = field.height(means[:, :2])
+            if self.surface_orientation_enabled:
+                from models.road_surface import align_road_quaternions
+                height, normals, supported = field.height_and_normal(means[:, :2])
+                quats = self._quats[start:start + chunk_size]
+                aligned = align_road_quaternions(quats, normals)
+                quats.copy_(torch.where(supported[..., None], aligned, quats))
+            else:
+                height, supported = field.height(means[:, :2])
             means[:, 2].copy_(torch.where(supported, height, means[:, 2]))
     
     # NOTE(gls): 关闭路面致密化
@@ -335,7 +347,8 @@ class RoadNodes(nn.Module):
         self._means = Parameter(torch.cat([self._means.detach(), child_means[:, 1:].reshape(-1, 3)], dim=0),
                                 requires_grad=self.surface_field is None)
         self._scales = Parameter(torch.cat([self._scales.detach(), child_scales[:, 1:].reshape(-1, 3)], dim=0))
-        self._quats = Parameter(torch.cat([self._quats.detach(), self._quats.detach()[split_mask].repeat_interleave(3, dim=0)], dim=0))
+        self._quats = Parameter(torch.cat([self._quats.detach(), self._quats.detach()[split_mask].repeat_interleave(3, dim=0)], dim=0),
+                                requires_grad=not self.surface_orientation_enabled)
         self._features_dc = Parameter(torch.cat([self._features_dc.detach(), self._features_dc.detach()[split_mask].repeat_interleave(3, dim=0)], dim=0))
         self._features_rest = Parameter(torch.cat([self._features_rest.detach(), self._features_rest.detach()[split_mask].repeat_interleave(3, dim=0)], dim=0))
         self._opacities = Parameter(torch.cat([self._opacities.detach(), self._opacities.detach()[split_mask].repeat_interleave(3, dim=0)], dim=0))
@@ -641,7 +654,8 @@ class RoadNodes(nn.Module):
         self._means = Parameter(torch.zeros((N,) + self._means.shape[1:], device=self.device),
                                 requires_grad=self.surface_field is None)
         self._scales = Parameter(torch.zeros((N,) + self._scales.shape[1:], device=self.device))
-        self._quats = Parameter(torch.zeros((N,) + self._quats.shape[1:], device=self.device))
+        self._quats = Parameter(torch.zeros((N,) + self._quats.shape[1:], device=self.device),
+                                requires_grad=not self.surface_orientation_enabled)
         self._features_dc = Parameter(torch.zeros((N,) + self._features_dc.shape[1:], device=self.device))
         self._features_rest = Parameter(torch.zeros((N,) + self._features_rest.shape[1:], device=self.device))
         self._opacities = Parameter(torch.zeros((N,) + self._opacities.shape[1:], device=self.device))

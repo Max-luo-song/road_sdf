@@ -13,6 +13,27 @@ from torch.nn import functional as F
 from utils.road_surface_prior import build_road_surface_grid
 
 
+@torch.no_grad()
+def align_road_quaternions(quaternions, normals):
+    """Align local Z to upward normals, retaining the quaternion's Z twist (wxyz).
+
+    Replacing the swing rather than accumulating rotations preserves lane yaw
+    and makes repeated geometry synchronization independent of the tilt history.
+    """
+    twist = quaternions[..., [0, 3]]
+    length = twist.norm(dim=-1, keepdim=True)
+    identity = torch.zeros_like(twist)
+    identity[..., 0] = 1
+    twist = torch.where(length > 1e-8, twist / length.clamp_min(1e-8), identity)
+    swing = torch.stack((1 + normals[..., 2], -normals[..., 1],
+                         normals[..., 0]), -1)
+    swing = F.normalize(swing, dim=-1)
+    sw, sx, sy = swing.unbind(-1)
+    tw, tz = twist.unbind(-1)
+    return torch.stack((sw * tw, sx * tw + sy * tz,
+                        sy * tw - sx * tz, sw * tz), -1)
+
+
 class HashGrid2D(nn.Module):
     """Bilinearly interpolated multiresolution hash features in normalized XY."""
 
@@ -145,6 +166,23 @@ class RoadSurfaceField(nn.Module):
         prediction = self.geometry(self.encoding(self.normalized_xy(xy)))
         delta = self.max_delta * torch.tanh(prediction[..., 0])
         return base + delta * supported, supported
+
+    @torch.no_grad()
+    def height_and_normal(self, xy):
+        """Bake geometry without connecting GS image losses to the field.
+
+        At d=a(x,y)*(z-H(x,y))=0, grad(d)=a*(-Hx,-Hy,1).
+        The positive slope factor cancels after normalization. Differentiate H
+        including the base grid, rather than interpreting the scalar slope as
+        a complete normal. autograd.grad only queries XY; parameter .grad stays
+        untouched, including for the frozen-height control.
+        """
+        with torch.enable_grad():
+            query = xy.detach().requires_grad_(True)
+            height, supported = self.height(query)
+            gradient, = torch.autograd.grad(height.sum(), query, create_graph=False)
+        normals = F.normalize(torch.cat((-gradient, torch.ones_like(height[..., None])), -1), dim=-1)
+        return height.detach(), normals.detach(), supported.detach()
 
     def sdf(self, points):
         base, supported = self.base_height(points[..., :2])

@@ -31,7 +31,7 @@ lidar_type="lidar" # lidar（运动补偿前）/visual（纯视觉）
 output_root="${OUTPUT_ROOT:-/inspire/hdd/global_user/guoluosong-253108120129/chery_workspace/zhengzhehao/output}"
 config_file="configs/road_height_learned.yaml"
 dataset_config="qcraft/11cams_${lidar_type}"
-extra_config_info="sdf-heightv2" # 修复 SDF 损失接入，避免覆盖 v1 实验结果
+extra_config_info="e0-sdf-normal-learned" # e0: 学习高度并对齐 SDF 法线
 
 # 相机分组训练配置
 group_execution_mode="serial"  # serial / parallel
@@ -42,7 +42,7 @@ eval_group0_views=2,3,5,9,12
 eval_group1_views=0,1,6,7,10,11
 num_view_groups=2
 
-group0_gpu=0
+group0_gpu="${GROUP0_GPU:-0}"
 group1_gpu=0
 
 eval_downscale_when_loading="[1]"

@@ -7,7 +7,7 @@ import unittest
 import torch
 from torch.nn import functional as F
 
-from models.road_surface import RoadSurfaceField
+from models.road_surface import RoadSurfaceField, align_road_quaternions
 from utils.config import load_config
 
 
@@ -42,6 +42,52 @@ class RoadSurfaceTests(unittest.TestCase):
         moved, _ = field.height(xy)
         self.assertAlmostEqual(moved[0].item(), 0.5)
         self.assertEqual(moved[1].item(), 0.)
+
+    def test_surface_normals_for_plane_and_frozen_geometry(self):
+        for learn_height in (True, False):
+            field = make_field(learn_height=learn_height)
+            rows, cols = field.base_heights.shape
+            y, x = torch.meshgrid(torch.arange(rows), torch.arange(cols), indexing="ij")
+            xy_grid = field.origin + (torch.stack((x, y), -1) + 0.5) * field.cell_size
+            field.base_heights.copy_(0.2 * xy_grid[..., 0] - 0.3 * xy_grid[..., 1])
+            query = torch.tensor([[0.13, 0.22], [0.51, -0.41]], requires_grad=True)
+            with torch.no_grad():
+                height, normals, supported = field.height_and_normal(query)
+            expected = F.normalize(torch.tensor([-0.2, 0.3, 1.]), dim=0)
+            self.assertTrue(supported.all())
+            torch.testing.assert_close(normals, expected.expand_as(normals))
+            torch.testing.assert_close(height, 0.2 * query[:, 0] - 0.3 * query[:, 1])
+            self.assertFalse(height.requires_grad or normals.requires_grad)
+            self.assertIsNone(query.grad)
+            self.assertTrue(all(p.grad is None for p in field.parameters()))
+
+    def test_normals_equal_learned_sdf_zero_surface_gradient(self):
+        field = make_field()
+        with torch.no_grad():
+            field.geometry[-1].weight.normal_(std=0.2)
+        xy = torch.tensor([[0.13, 0.22], [0.51, -0.41], [100., 100.]])
+        height, normals, supported = field.height_and_normal(xy)
+        self.assertEqual(supported.tolist(), [True, True, False])
+        points = torch.cat((xy[:2], height[:2, None]), -1).requires_grad_(True)
+        sdf, _ = field.sdf(points)
+        gradient, = torch.autograd.grad(sdf.sum(), points)
+        torch.testing.assert_close(normals[:2], F.normalize(gradient, dim=-1))
+        self.assertTrue(all(p.grad is None for p in field.parameters()))
+
+    def test_orientation_alignment_preserves_yaw_without_accumulating_tilt(self):
+        yaw = torch.tensor([0., 0.7, -2.5, 3.14159265])
+        original = torch.zeros(4, 4)
+        original[:, 0], original[:, 3] = (yaw / 2).cos(), (yaw / 2).sin()
+        normals = F.normalize(torch.tensor([[-0.2, 0.3, 1.]]).expand(4, -1), dim=-1)
+        aligned = align_road_quaternions(original, normals)
+        w, x, y, z = aligned.unbind(-1)
+        local_z = torch.stack((2 * (x*z + w*y), 2 * (y*z - w*x),
+                               1 - 2 * (x*x + y*y)), -1)
+        torch.testing.assert_close(local_z, normals)
+        torch.testing.assert_close(aligned.norm(dim=-1), torch.ones(4))
+        torch.testing.assert_close(align_road_quaternions(aligned, normals), aligned)
+        flat = normals.new_tensor([0., 0., 1.]).expand_as(normals)
+        torch.testing.assert_close(align_road_quaternions(aligned, flat), original)
 
     def test_background_tracks_surface_without_geometry_gradient(self):
         field = make_field()
