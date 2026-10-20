@@ -242,7 +242,14 @@ class RoadNodes(nn.Module):
     @property
     def get_scaling(self):
         if self.surface_field is not None and self.surface_field.cfg.get("free_scales", False):
-            return torch.exp(self._scales)
+            fixed_normal_scale = self.surface_field.cfg.get("fixed_normal_scale", None)
+            if fixed_normal_scale is None:
+                return torch.exp(self._scales)
+            if self.ball_gaussians or self.gaussian_2d:
+                raise ValueError("fixed_normal_scale requires ordinary 3D RoadNodes")
+            xy_scale = torch.exp(self._scales[..., :2])
+            normal_scale = torch.full_like(self._scales[..., 2:3], float(fixed_normal_scale))
+            return torch.cat((xy_scale, normal_scale), dim=-1)
         if self.ball_gaussians:
             if self.gaussian_2d:
                 scaling = torch.exp(self._scales).repeat(1, 2)

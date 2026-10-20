@@ -28,4 +28,5 @@ model:
     networks:
       road_surface:
         free_scales: true
+        fixed_normal_scale: 0.005  # local Z follows the SDF normal; keep its thickness fixed
         free_opacity: true

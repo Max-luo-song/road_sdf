@@ -7,7 +7,7 @@ cd "${repo_root}"
 scene="${1:-20260613_102138_QCJPTDJ07384_3298_3308}"
 export GROUP0_GPU="${E1_GPU:-0}"
 export QCRAFT_CONFIG_FILE="configs/road_e1.yaml"
-export RUN_NAME_OVERRIDE="${RUN_NAME_OVERRIDE:-$(TZ=Asia/Shanghai date +%Y%m%d_%H%M%S)_e1_sdf-road-gs}"
+export RUN_NAME_OVERRIDE="${RUN_NAME_OVERRIDE:-$(TZ=Asia/Shanghai date +%Y%m%d_%H%M%S)_e1_sdf-road-gs-fixedz}"
 if [[ ! "${scene}" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ || ! "${RUN_NAME_OVERRIDE}" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]]; then
     echo "[ERROR] Invalid scene or run name." >&2
     exit 1
@@ -21,7 +21,7 @@ python - <<'PYCONFIG'
 from utils.config import load_config
 cfg = load_config("configs/road_e1.yaml")
 field = cfg.model.RoadNodes.networks.road_surface
-assert field.enabled and field.learn_height and field.align_normals and field.free_scales and field.free_opacity, "e1 requires learned SDF normals and free GS scales/opacity"
+assert field.enabled and field.learn_height and field.align_normals and field.free_scales and field.free_opacity and field.fixed_normal_scale == 0.005, "e1 requires learned SDF normals, free XY scales/opacity, and fixed normal scale"
 assert cfg.trainer.losses.road_color.w > 0 and cfg.trainer.losses.road_coverage.w > 0 and cfg.trainer.losses.road_contribution.w > 0
 print(f"e1: learned SDF + road GS appearance; {cfg.trainer.optim.num_iters} steps; group0 cameras 2,3,5,9,12")
 PYCONFIG

@@ -109,7 +109,10 @@ class RoadTrainerIntegrationTests(unittest.TestCase):
 
     def test_e1_scale_opacity_and_cull_keep_sdf_geometry_frozen(self):
         _, road, _, _ = self.fixture()
-        road.surface_field.cfg.update(align_normals=True, free_scales=True, free_opacity=True)
+        road.surface_field.cfg.update(align_normals=True, free_scales=True,
+                                      free_opacity=True, fixed_normal_scale=0.005)
+        road.ball_gaussians = False
+        road.gaussian_2d = False
         road._scales = nn.Parameter(torch.log(torch.tensor([[0.12, 0.15, 0.04],
                                                             [0.12, 0.15, 0.04]])))
         road._opacities = nn.Parameter(torch.logit(torch.full((2, 1), 0.1)))
@@ -117,8 +120,13 @@ class RoadTrainerIntegrationTests(unittest.TestCase):
         road._features_rest = nn.Parameter(torch.zeros(2, 3, 3))
         road.reg_cfg = {"lowest_opacity": 0.2}
         road.ctrl_cfg = SimpleNamespace(cull_alpha_thresh=0.005, reset_alpha_interval=4000)
-        torch.testing.assert_close(road.get_scaling, road._scales.exp())
+        torch.testing.assert_close(road.get_scaling[:, :2], road._scales[:, :2].exp())
+        torch.testing.assert_close(road.get_scaling[:, 2], torch.full((2,), 0.005))
         torch.testing.assert_close(road.get_opacity, torch.full((2, 1), 0.1))
+        (road.get_scaling.sum() + road.get_opacity.sum()).backward()
+        self.assertGreater(road._scales.grad[:, :2].abs().sum().item(), 0)
+        torch.testing.assert_close(road._scales.grad[:, 2], torch.zeros(2))
+        self.assertGreater(road._opacities.grad.abs().sum().item(), 0)
         road.cull_gaussians()
         self.assertFalse(road._means.requires_grad)
         self.assertFalse(road._quats.requires_grad)
