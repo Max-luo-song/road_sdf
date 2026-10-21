@@ -377,9 +377,10 @@ class VanillaGaussians(nn.Module):
                 for group in optimizer.param_groups:
                     if group["name"] == self.class_prefix+"opacity":
                         old_params = group["params"][0]
-                        param_state = optimizer.state[old_params]
-                        param_state["exp_avg"] = torch.zeros_like(param_state["exp_avg"])
-                        param_state["exp_avg_sq"] = torch.zeros_like(param_state["exp_avg_sq"])
+                        param_state = optimizer.state.get(old_params)
+                        if param_state and "exp_avg" in param_state:
+                            param_state["exp_avg"].zero_()
+                            param_state["exp_avg_sq"].zero_()
             self.xys_grad_norm = None
             self.vis_counts = None
             self.max_2Dsize = None
