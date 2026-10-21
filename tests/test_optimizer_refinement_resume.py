@@ -1,8 +1,20 @@
+import ast
+from pathlib import Path
 import unittest
 
 import torch
 
-from models.gaussians.basics import dup_in_optim, remove_from_optim
+
+# The refinement helpers need only torch; loading basics.py normally also loads
+# optional rasterization libraries that are unavailable in CPU test environments.
+source = Path(__file__).resolve().parents[1] / "models/gaussians/basics.py"
+module = ast.parse(source.read_text())
+helpers = [node for node in module.body if isinstance(node, ast.FunctionDef)
+           and node.name in {"dup_in_optim", "remove_from_optim"}]
+namespace = {"torch": torch}
+exec(compile(ast.Module(body=helpers, type_ignores=[]), str(source), "exec"), namespace)
+dup_in_optim = namespace["dup_in_optim"]
+remove_from_optim = namespace["remove_from_optim"]
 
 
 class OptimizerRefinementResumeTest(unittest.TestCase):
