@@ -270,11 +270,22 @@ def main(args):
     
     # setup optimizer  
     trainer.initialize_optimizer()
+    if args.resume_from is not None:
+        # Model-only checkpoints do not contain Adam state. Restore the learning
+        # rate schedule at the saved step before the first resumed update.
+        for group in trainer.optimizer.param_groups:
+            if group["name"] in trainer.lr_schedulers:
+                group["lr"] = trainer.lr_schedulers[group["name"]](trainer.step)
     
     # setup metric logger
     metrics_file = os.path.join(cfg.log_dir, "metrics.json")
     metric_logger = MetricLogger(delimiter="  ", output_file=metrics_file)
-    all_iters = np.arange(trainer.step, trainer.num_iters + 1)
+    # Checkpoints are written after the optimizer update for `trainer.step`.
+    # A resumed run must continue at the next step rather than repeat it.
+    first_step = trainer.step + (1 if args.resume_from is not None else 0)
+    if first_step > trainer.num_iters:
+        raise ValueError(f"Checkpoint step {trainer.step} is already at the training limit")
+    all_iters = np.arange(first_step, trainer.num_iters + 1)
     
     # DEBUG USE
     # do_evaluation(
@@ -431,7 +442,7 @@ def main(args):
         #----------------------------     Saving     --------------------------------
         do_save = step > 0 and (
             (step % cfg.logging.saveckpt_freq == 0) or (step == trainer.num_iters)
-        ) and (args.resume_from is None)
+        )
         if do_save:  # 保存之前再做一遍筛选
             # if 'RoadNodes' in trainer.gaussian_classes and 'Background' in trainer.gaussian_classes:
             #     clean_road_overhead_during_training(

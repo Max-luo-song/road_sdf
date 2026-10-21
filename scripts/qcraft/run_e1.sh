@@ -16,6 +16,13 @@ if ! command -v python >/dev/null && [[ -x /root/miniconda3/bin/python ]]; then
     export PATH="/root/miniconda3/bin:${PATH}"
 fi
 source scripts/qcraft/common.sh
+if [[ -n "${RESUME_FROM_GROUP0:-}" ]]; then
+    if [[ ! -f "${RESUME_FROM_GROUP0}" ]]; then
+        echo "[ERROR] Resume checkpoint not found: ${RESUME_FROM_GROUP0}" >&2
+        exit 1
+    fi
+    printf 'Resume group0 from: %s\n' "${RESUME_FROM_GROUP0}"
+fi
 export PYTHONPATH="${repo_root}${PYTHONPATH:+:${PYTHONPATH}}"
 python - <<'PYCONFIG'
 from utils.config import load_config

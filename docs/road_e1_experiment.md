@@ -13,3 +13,8 @@ bash scripts/qcraft/run_e1.sh 20260613_102138_QCJPTDJ07384_3298_3308
 ```
 
 默认 pipeline 的 `scripts/qcraft/common.sh` 也指向 `configs/road_e1.yaml`。可用 `RUN_NAME_OVERRIDE`、`E1_GPU`、`E1_DRY_RUN=1` 调整运行。请从头训练；旧实验 checkpoint 的尺度与透明度参数语义及优化过程不同。
+
+从同一 e1 实验的中间权重续训时，设置 `RESUME_FROM_GROUP0` 指向原 run 的
+`group0/checkpoint_XXXXX.pth`，再运行 `run_e1.sh`。脚本会创建一个新 run，继续至
+40000 步并执行评估和轨迹渲染。checkpoint 只保存模型和步数；Adam 动量与采样器
+状态不会恢复，学习率按保存步数恢复到计划值，因此这不是逐步完全一致的继续运行。

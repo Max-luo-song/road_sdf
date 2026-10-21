@@ -118,9 +118,18 @@ start_train_group() {
     local view_ids="$3"
     local log_file="$4"
     local pid_var="$5"
+    local resume_args=()
+    if [[ "${group_id}" == "0" && -n "${RESUME_FROM_GROUP0:-}" ]]; then
+        if [[ ! -f "${RESUME_FROM_GROUP0}" ]]; then
+            log "[ERROR] Resume checkpoint not found: ${RESUME_FROM_GROUP0}"
+            exit 1
+        fi
+        resume_args=(--resume_from "${RESUME_FROM_GROUP0}")
+    fi
 
     setsid env CUDA_VISIBLE_DEVICES="${physical_gpu}" python -u tools/train.py \
         --config_file "${config_file}" \
+        "${resume_args[@]}" \
         --output_root "${output_root}" \
         --project "${project_name}" \
         --run_name "${run_name}" \
