@@ -107,6 +107,20 @@ class RoadTrainerIntegrationTests(unittest.TestCase):
         self.assertEqual(set(trainer.compute_losses(outputs, image, {}, None)), {"rgb_loss"})
         self.assertEqual(set(trainer.compute_metrics(outputs, image)), {"psnr"})
 
+    def test_paper_rsg_semantic_mask_loss(self):
+        trainer, road, image, outputs = self.fixture()
+        road.surface_field.cfg["paper_rsg"] = True
+        trainer._road_field_camera = None
+        trainer.losses_dict = OmegaConf.create({
+            "rgb": {"w": 0.8}, "ssim": {"w": 0.2}, "lpips": {"w": 0.05}})
+        trainer.ssim = lambda target, prediction: target.new_tensor(1.)
+        trainer.lpips = lambda prediction, target: prediction.square().mean()
+        outputs["RoadNodes_contribution"] = nn.Parameter(torch.full((4, 4, 1), 0.5))
+        losses = trainer.compute_losses(outputs, image, {}, None)
+        self.assertTrue({"road_semantic_mask", "lpips_loss", "ssim_loss"}.issubset(losses))
+        losses["road_semantic_mask"].backward()
+        self.assertIsNotNone(outputs["RoadNodes_contribution"].grad)
+
     def test_e1_scale_opacity_and_cull_keep_sdf_geometry_frozen(self):
         _, road, _, _ = self.fixture()
         road.surface_field.cfg.update(align_normals=True, free_scales=True,
@@ -132,6 +146,43 @@ class RoadTrainerIntegrationTests(unittest.TestCase):
         self.assertFalse(road._quats.requires_grad)
         self.assertTrue(road._scales.requires_grad)
         self.assertTrue(road._opacities.requires_grad)
+
+    def test_extrags_road_initializes_rgb_only_gaussians(self):
+        base_road_class = load_source_class(
+            ROOT / "models/nodes/road.py", "RoadNodes",
+            RGB2SH=lambda colors: colors, num_sh_bases=lambda degree: 1,
+        )
+        road_class = load_source_class(
+            ROOT / "models/nodes/extrags_road.py", "ExtraGSRoadNodes",
+            RoadNodes=base_road_class, RGB2SH=lambda colors: colors,
+            num_sh_bases=lambda degree: 1,
+        )
+        road = road_class(
+            class_name="RoadNodes", ctrl=OmegaConf.create({"road_sh_degree": 0}),
+            reg={"lowest_opacity": 0.2}, device=torch.device("cpu"),
+            networks={"road_surface": {
+                "enabled": True, "paper_rsg": True, "align_normals": True,
+                "appearance_only": True, "initial_opacity": 0.95,
+                "free_scales": True, "fixed_normal_scale": 0.005,
+            }},
+        )
+        means = torch.tensor([[0., 0., 0.], [0.1, 0., 0.], [0., 0.1, 0.]])
+        colors = torch.full((3, 3), 0.5)
+        self.assertFalse(road.create_from_pcd(means, colors))
+        self.assertEqual(road.num_points, 3)
+        self.assertEqual(road._scales.shape[1], 2)
+        for name in ("_means", "_quats", "_scales", "_opacities"):
+            self.assertFalse(getattr(road, name).requires_grad, name)
+        self.assertTrue(road._features_dc.requires_grad)
+        self.assertEqual(road._features_rest.numel(), 0)
+        self.assertEqual(set(road.get_gaussian_param_groups()),
+                         {"RoadNodes#sh_dc"})
+        torch.testing.assert_close(road.get_opacity, torch.full_like(road.get_opacity, 0.95))
+        torch.testing.assert_close(road.get_scaling[:, 2], torch.full((road.num_points,), 0.005))
+        state = {key: value.clone() for key, value in road.state_dict().items()}
+        road.load_state_dict(state)
+        self.assertFalse(road._scales.requires_grad)
+        self.assertFalse(road._opacities.requires_grad)
 
     def test_actual_sync_bakes_height_and_orientation_and_retains_unsupported(self):
         _, road, _, _ = self.fixture()

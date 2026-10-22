@@ -61,11 +61,23 @@ class RoadNodes(nn.Module):
         field_cfg = (networks or {}).get("road_surface", {})
         self.surface_field = None
         if field_cfg.get("enabled", False):
-            from models.road_surface import RoadSurfaceField
+            if field_cfg.get("paper_rsg", False):
+                from models.extrags_road import ExtraGSRoadField as FieldClass
+            else:
+                from models.road_surface import RoadSurfaceField as FieldClass
+            if field_cfg.get("appearance_only", False):
+                if (self.ball_gaussians or self.gaussian_2d
+                        or not field_cfg.get("align_normals", False)
+                        or not field_cfg.get("free_scales", False)
+                        or field_cfg.get("fixed_normal_scale", 0) <= 0):
+                    raise ValueError("appearance_only requires ordinary thin 3D Gaussians with SDF normals and fixed normal scale")
+                opacity = field_cfg.get("initial_opacity", 0.95)
+                if not 0 < opacity < 1:
+                    raise ValueError("initial_opacity must be strictly between 0 and 1")
             # Auxiliary initialization must not change the existing GS random stream.
             with torch.random.fork_rng(devices=[]):
                 torch.random.default_generator.manual_seed(field_cfg.get("initialization_seed", 2718))
-                self.surface_field = RoadSurfaceField(field_cfg).to(self.device)
+                self.surface_field = FieldClass(field_cfg).to(self.device)
         
     @property
     def sh_degree(self):
@@ -75,6 +87,11 @@ class RoadNodes(nn.Module):
     def surface_orientation_enabled(self):
         return (self.surface_field is not None
                 and self.surface_field.cfg.get("align_normals", False))
+
+    @property
+    def appearance_only(self):
+        return (self.surface_field is not None
+                and self.surface_field.cfg.get("appearance_only", False))
 
     def create_from_pcd(
         self,
@@ -173,9 +190,10 @@ class RoadNodes(nn.Module):
 
         if self.ball_gaussians:
             # 如果是球形，取最大值
-            self._scales = Parameter(torch.log(fixed_scale_tensor))
+            self._scales = Parameter(torch.log(fixed_scale_tensor), requires_grad=not self.appearance_only)
         else:
-            self._scales = Parameter(torch.log(base_scale))
+            scales = base_scale[:, :2] if self.appearance_only else base_scale
+            self._scales = Parameter(torch.log(scales), requires_grad=not self.appearance_only)
 
         # 旋转初始化：w=1, 意味着高斯主轴对齐世界坐标轴 (配合你压缩 Z 的策略，正好贴合路面)
         unit_quats = torch.zeros((num_points, 4), dtype=torch.float, device=self.device)
@@ -191,7 +209,7 @@ class RoadNodes(nn.Module):
             )
         self._quats = Parameter(unit_quats, requires_grad=not self.surface_orientation_enabled)
 
-        if (self._lane_mask is not None and self._lane_mask.any()
+        if (self._scales.requires_grad and self._lane_mask is not None and self._lane_mask.any()
                 and not (self.surface_field is not None
                          and self.surface_field.cfg.get("free_scales", False))):
             lane_mask = self._lane_mask
@@ -219,7 +237,11 @@ class RoadNodes(nn.Module):
         self._features_rest = Parameter(shs[:, 1:, :])
         
         # 透明度初始化(会训练，初始化随机即可)
-        self._opacities = Parameter(torch.logit(0.2 * torch.ones(num_points, 1, device=self.device)))
+        initial_opacity = self.surface_field.cfg.get("initial_opacity", 0.2) if self.appearance_only else 0.2
+        self._opacities = Parameter(
+            torch.logit(initial_opacity * torch.ones(num_points, 1, device=self.device)),
+            requires_grad=not self.appearance_only,
+        )
         if self.surface_field is not None:
             self.surface_field.initialize(resampled_means.detach(), init_means.detach())
         return False
@@ -241,6 +263,10 @@ class RoadNodes(nn.Module):
         return self._means.shape[0]
     @property
     def get_scaling(self):
+        if self.appearance_only:
+            normal_scale = self.surface_field.cfg["fixed_normal_scale"]
+            return torch.cat((torch.exp(self._scales),
+                              torch.full_like(self._scales[..., :1], normal_scale)), -1)
         if self.surface_field is not None and self.surface_field.cfg.get("free_scales", False):
             fixed_normal_scale = self.surface_field.cfg.get("fixed_normal_scale", None)
             if fixed_normal_scale is None:
@@ -307,6 +333,18 @@ class RoadNodes(nn.Module):
         # This also detects checkpoint loads, splitting and external optimizers.
         if getattr(self, "_surface_synced_key", None) == self._surface_sync_key():
             return
+        if field.cfg.get("paper_rsg", False):
+            from models.road_surface import align_road_quaternions
+            chunk_size = field.cfg.get("query_chunk_size", 65536)
+            for start in range(0, self.num_points, chunk_size):
+                means = self._means[start:start + chunk_size]
+                height, normal, supported = field.height_and_normal(means[:, :2])
+                means[:, 2].copy_(torch.where(supported, height, means[:, 2]))
+                quats = self._quats[start:start + chunk_size]
+                aligned = align_road_quaternions(quats, normal)
+                quats.copy_(torch.where(supported[..., None], aligned, quats))
+            self._surface_synced_key = self._surface_sync_key()
+            return
         base_key = (field.base_geometry_version(), id(self._means), self._means._version,
                     self._means.device, self._means.dtype)
         cache_valid = (getattr(self, "_surface_base_key", None) == base_key
@@ -347,6 +385,8 @@ class RoadNodes(nn.Module):
         xys_grad: torch.Tensor,
         last_size: int,
     ) -> None:
+        if self.appearance_only:
+            return
         split_start = self.ctrl_cfg.get("edge_split_start", None)
         split_step = self.ctrl_cfg.get("edge_split_step", None)
         if split_start is None or split_step is None:
@@ -434,6 +474,8 @@ class RoadNodes(nn.Module):
             )
         
     def get_gaussian_param_groups(self) -> Dict[str, List[Parameter]]:
+        if self.appearance_only:
+            return {self.class_prefix + "sh_dc": [self._features_dc]}
         return {
             self.class_prefix+"xyz": [self._means],
             self.class_prefix+"sh_dc": [self._features_dc],
@@ -453,6 +495,8 @@ class RoadNodes(nn.Module):
 
     # NOTE(gls)： 受控致密化，体现在致密化高斯限制在路面上
     def refinement_after_undercontrol(self, step, optimizer: torch.optim.Optimizer) -> None:
+            if self.appearance_only:
+                return
             assert step == self.step
             if self.step <= self.ctrl_cfg.warmup_steps:
                 return
@@ -701,12 +745,14 @@ class RoadNodes(nn.Module):
         N = state_dict["_means"].shape[0]
         self._means = Parameter(torch.zeros((N,) + self._means.shape[1:], device=self.device),
                                 requires_grad=self.surface_field is None)
-        self._scales = Parameter(torch.zeros((N,) + self._scales.shape[1:], device=self.device))
+        self._scales = Parameter(torch.zeros_like(state_dict["_scales"], device=self.device),
+                                 requires_grad=not self.appearance_only)
         self._quats = Parameter(torch.zeros((N,) + self._quats.shape[1:], device=self.device),
                                 requires_grad=not self.surface_orientation_enabled)
         self._features_dc = Parameter(torch.zeros((N,) + self._features_dc.shape[1:], device=self.device))
         self._features_rest = Parameter(torch.zeros((N,) + self._features_rest.shape[1:], device=self.device))
-        self._opacities = Parameter(torch.zeros((N,) + self._opacities.shape[1:], device=self.device))
+        self._opacities = Parameter(torch.zeros((N,) + self._opacities.shape[1:], device=self.device),
+                                    requires_grad=not self.appearance_only)
         msg = super().load_state_dict(state_dict, **kwargs)
         return msg
     

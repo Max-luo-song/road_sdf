@@ -339,14 +339,13 @@ class BasicTrainer(nn.Module):
             )
         self.depth_loss_fn = depth_loss_fn
 
+        self.road_loss_fn = None
         if "RoadNodes" in self.models:
-            road_loss_fn = None
             road_loss_cfg = self.losses_dict.get("road", None)
             if road_loss_cfg is not None:
                 from models.losses import RoadLoss
 
-                road_loss_fn = RoadLoss()  # TODO(gls): args
-                self.road_loss_fn = road_loss_fn
+                self.road_loss_fn = RoadLoss()  # TODO(gls): args
 
     def optimizer_zero_grad(self) -> None:
         self.optimizer.zero_grad()

@@ -1,0 +1,59 @@
+# ExtraGS paper §3.2 Road Surface Gaussians on the existing QCraft pipeline.
+_base_: omnire_extended_cam_lidar.yaml
+trainer:
+  losses:
+    rgb:
+      w: 0.8
+    ssim:
+      w: 0.2
+    lpips:
+      w: 0.05
+    mask:
+      w: 0.5
+    road: null
+    depth: null
+  gaussian_ctrl_general_cfg:
+    road_sh_degree: 0
+model:
+  Background:
+    reg:
+      road_intrusion: null
+  RoadNodes:
+    type: models.nodes.extrags_road.ExtraGSRoadNodes
+    ctrl:
+      rsg_init_cell_size: 0.1
+      rsg_tangent_scale: 0.07
+    networks:
+      road_surface:
+        enabled: true
+        paper_rsg: true
+        appearance_only: true
+        align_normals: true
+        initial_opacity: 0.95
+        free_scales: true
+        fixed_normal_scale: 0.005  # numerical thickness for the 3D gsplat renderer
+        levels: 8
+        features: 2
+        table_size: 16384
+        min_resolution: 16
+        max_resolution: 512
+        hidden_dim: 64
+        direction_frequencies: 4
+        support_margin: 3.0
+        apply_after: 0
+        query_chunk_size: 65536
+        step_interval: 1
+        rays_per_image: 128
+        samples_per_ray: 48
+        ray_height_band: 1.0
+        inverse_sdf_scale: 40.0
+        near: 0.1
+        far: 120.0
+        min_downward_cos: 0.02
+        rgb_w: 0.5
+        eikonal_w: 0.5
+        eikonal_points: 0  # use every ray sample, as in paper equation (3)
+        mask_w: 0.5
+    optim:
+      surface_field:
+        lr: 0.001

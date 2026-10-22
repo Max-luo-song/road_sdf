@@ -115,6 +115,27 @@ class MultiTrainer(BasicTrainer):
                 outputs, image_infos, self.losses_dict, self.step))
         road = self.models.get("RoadNodes")
         field = getattr(road, "surface_field", None)
+        if field is not None and field.cfg.get("paper_rsg", False) and self.training:
+            valid_rgb = (~image_infos["egocar_masks"] if "egocar_masks" in image_infos
+                         else torch.ones_like(image_infos["road_masks"], dtype=torch.bool))
+            target_rgb = image_infos["pixels"] * valid_rgb[..., None]
+            prediction_rgb = outputs["rgb"] * valid_rgb[..., None]
+            losses["rgb_loss"] = self.losses_dict.rgb.w * (prediction_rgb - target_rgb).abs().mean()
+            losses["ssim_loss"] = self.losses_dict.ssim.w * (1 - self.ssim(
+                target_rgb.permute(2, 0, 1)[None], prediction_rgb.permute(2, 0, 1)[None]))
+            losses["lpips_loss"] = self.losses_dict.lpips.w * self.lpips(
+                prediction_rgb.permute(2, 0, 1)[None], target_rgb.permute(2, 0, 1)[None])
+        if (field is not None and field.cfg.get("paper_rsg", False)
+                and self.training and "RoadNodes_contribution" in outputs):
+            valid = torch.ones_like(image_infos["road_masks"], dtype=torch.bool)
+            for key in ("egocar_masks", "dynamic_masks"):
+                if key in image_infos:
+                    valid &= ~image_infos[key].bool()
+            if valid.any():
+                prediction = outputs["RoadNodes_contribution"].squeeze(-1).clamp(1e-5, 1 - 1e-5)
+                target = image_infos["road_masks"].float()
+                losses["road_semantic_mask"] = field.cfg.get("mask_w", 0.05) * \
+                    torch.nn.functional.binary_cross_entropy(prediction[valid], target[valid])
         camera = getattr(self, "_road_field_camera", None)
         if field is not None and self.training and camera is not None:
             field_losses = field.training_losses(image_infos, camera, self.step)
@@ -527,8 +548,10 @@ class MultiTrainer(BasicTrainer):
         color_active = supervision_weight(self.losses_dict.get("road_color"), self.step) > 0
         coverage_active = supervision_weight(self.losses_dict.get("road_coverage"), self.step) > 0
         contribution_active = supervision_weight(self.losses_dict.get("road_contribution"), self.step) > 0
+        road_model = self.models.get("RoadNodes")
+        paper_rsg_active = bool(getattr(getattr(road_model, "surface_field", None), "cfg", {}).get("paper_rsg", False))
         if (self.training and "road_masks" in image_infos and "RoadNodes" in self.gaussian_classes
-                and (color_active or coverage_active or contribution_active)):
+                and (color_active or coverage_active or contribution_active or paper_rsg_active)):
             road_mask = self.pts_labels == self.gaussian_classes["RoadNodes"]
             road_rgb, _, road_alpha = render_fn(road_mask)
             outputs["RoadNodes_opacity"] = road_alpha
@@ -536,7 +559,7 @@ class MultiTrainer(BasicTrainer):
                 road_color = unpremultiply_road_rgb(road_rgb, road_alpha)
                 outputs["RoadNodes_color"] = self.affine_transformation(
                     road_color, image_infos, detach_affine=True)
-            if contribution_active:
+            if contribution_active or paper_rsg_active:
                 tags = torch.zeros_like(gs.rgbs)
                 tags[:, 0] = road_mask.to(tags.dtype)
                 contribution, _, _ = render_fn(colors_override=tags)
